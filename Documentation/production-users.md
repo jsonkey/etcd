@@ -69,3 +69,15 @@ Radius Intelligence uses Kubernetes running CoreOS to containerize and scale int
 
 [teamcity]: https://www.jetbrains.com/teamcity/
 [raoofm]:https://github.com/raoofm
+
+## JD.COM
+
+- *Application*: multiple internal tools, Kubernetes clusters, Internal domain name resolution service(https://github.com/ipdcode/hades)
+- *Launched*: July 2016
+- *Cluster Size*: 3 clusters of 5 and 3 members
+- *Order of Data Size*: 1s of MB
+- *Operator*: JD.COM JDOS Team; csp@jd.com
+- *Environment*: Baremetal, Kubernetes
+- *Backups*: Periodic async to JSS(JD.COM object storage, as AWS S3)
+
+JDOS2.0 uses Kubernetes running containerize and scale internal business system. Examples include running MySQL Clusters, Tensorflow Clusters and Middleware(MQ, Redis...). etcd clusters back these clusters as well as provide some basic environment bootstrapping configuration keys.
