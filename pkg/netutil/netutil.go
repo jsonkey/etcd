@@ -1,4 +1,4 @@
-// Copyright 2015 CoreOS, Inc.
+// Copyright 2015 The etcd Authors
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,83 +12,132 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// Package netutil implements network-related utility functions.
 package netutil
 
 import (
-	"encoding/base64"
 	"net"
-	"net/http"
 	"net/url"
-	"strings"
+	"reflect"
+	"sort"
+	"time"
 
-	"github.com/coreos/etcd/Godeps/_workspace/src/github.com/coreos/pkg/capnslog"
+	"golang.org/x/net/context"
+
+	"github.com/coreos/etcd/pkg/types"
+	"github.com/coreos/pkg/capnslog"
 )
 
 var (
-	plog = capnslog.NewPackageLogger("github.com/coreos/etcd/pkg", "netutil")
+	plog = capnslog.NewPackageLogger("github.com/coreos/etcd", "pkg/netutil")
 
 	// indirection for testing
 	resolveTCPAddr = net.ResolveTCPAddr
 )
 
-// ResolveTCPAddrs is a convenience wrapper for net.ResolveTCPAddr.
-// ResolveTCPAddrs resolves all DNS hostnames in-place for the given set of
-// url.URLs.
-func ResolveTCPAddrs(urls ...[]url.URL) error {
+const retryInterval = time.Second
+
+// resolveTCPAddrs is a convenience wrapper for net.ResolveTCPAddr.
+// resolveTCPAddrs return a new set of url.URLs, in which all DNS hostnames
+// are resolved.
+func resolveTCPAddrs(ctx context.Context, urls [][]url.URL) ([][]url.URL, error) {
+	newurls := make([][]url.URL, 0)
 	for _, us := range urls {
+		nus := make([]url.URL, len(us))
 		for i, u := range us {
-			host, _, err := net.SplitHostPort(u.Host)
+			nu, err := url.Parse(u.String())
 			if err != nil {
-				plog.Errorf("could not parse url %s during tcp resolving", u.Host)
-				return err
+				return nil, err
 			}
-			if host == "localhost" {
-				continue
-			}
-			if net.ParseIP(host) != nil {
-				continue
-			}
-			tcpAddr, err := resolveTCPAddr("tcp", u.Host)
+			nus[i] = *nu
+		}
+		for i, u := range nus {
+			h, err := resolveURL(ctx, u)
 			if err != nil {
-				plog.Errorf("could not resolve host %s", u.Host)
-				return err
+				return nil, err
 			}
+			if h != "" {
+				nus[i].Host = h
+			}
+		}
+		newurls = append(newurls, nus)
+	}
+	return newurls, nil
+}
+
+func resolveURL(ctx context.Context, u url.URL) (string, error) {
+	for ctx.Err() == nil {
+		host, _, err := net.SplitHostPort(u.Host)
+		if err != nil {
+			plog.Errorf("could not parse url %s during tcp resolving", u.Host)
+			return "", err
+		}
+		if host == "localhost" || net.ParseIP(host) != nil {
+			return "", nil
+		}
+		tcpAddr, err := resolveTCPAddr("tcp", u.Host)
+		if err == nil {
 			plog.Infof("resolving %s to %s", u.Host, tcpAddr.String())
-			us[i].Host = tcpAddr.String()
+			return tcpAddr.String(), nil
+		}
+		plog.Warningf("failed resolving host %s (%v); retrying in %v", u.Host, err, retryInterval)
+		select {
+		case <-ctx.Done():
+			plog.Errorf("could not resolve host %s", u.Host)
+			return "", err
+		case <-time.After(retryInterval):
 		}
 	}
-	return nil
+	return "", ctx.Err()
 }
 
-// BasicAuth returns the username and password provided in the request's
-// Authorization header, if the request uses HTTP Basic Authentication.
-// See RFC 2617, Section 2.
-// Based on the BasicAuth method from the Golang standard lib.
-// TODO: use the standard lib BasicAuth method when we move to Go 1.4.
-func BasicAuth(r *http.Request) (username, password string, ok bool) {
-	auth := r.Header.Get("Authorization")
-	if auth == "" {
-		return
+// urlsEqual checks equality of url.URLS between two arrays.
+// This check pass even if an URL is in hostname and opposite is in IP address.
+func urlsEqual(ctx context.Context, a []url.URL, b []url.URL) bool {
+	if len(a) != len(b) {
+		return false
 	}
-	return parseBasicAuth(auth)
-}
-
-// parseBasicAuth parses an HTTP Basic Authentication string.
-// "Basic QWxhZGRpbjpvcGVuIHNlc2FtZQ==" returns ("Aladdin", "open sesame", true).
-// Taken from the Golang standard lib.
-// TODO: use the standard lib BasicAuth method when we move to Go 1.4.
-func parseBasicAuth(auth string) (username, password string, ok bool) {
-	if !strings.HasPrefix(auth, "Basic ") {
-		return
-	}
-	c, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(auth, "Basic "))
+	urls, err := resolveTCPAddrs(ctx, [][]url.URL{a, b})
 	if err != nil {
-		return
+		return false
 	}
-	cs := string(c)
-	s := strings.IndexByte(cs, ':')
-	if s < 0 {
-		return
+	a, b = urls[0], urls[1]
+	sort.Sort(types.URLs(a))
+	sort.Sort(types.URLs(b))
+	for i := range a {
+		if !reflect.DeepEqual(a[i], b[i]) {
+			return false
+		}
 	}
-	return cs[:s], cs[s+1:], true
+
+	return true
+}
+
+func URLStringsEqual(ctx context.Context, a []string, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	urlsA := make([]url.URL, 0)
+	for _, str := range a {
+		u, err := url.Parse(str)
+		if err != nil {
+			return false
+		}
+		urlsA = append(urlsA, *u)
+	}
+	urlsB := make([]url.URL, 0)
+	for _, str := range b {
+		u, err := url.Parse(str)
+		if err != nil {
+			return false
+		}
+		urlsB = append(urlsB, *u)
+	}
+
+	return urlsEqual(ctx, urlsA, urlsB)
+}
+
+func IsNetworkTimeoutError(err error) bool {
+	nerr, ok := err.(net.Error)
+	return ok && nerr.Timeout()
 }

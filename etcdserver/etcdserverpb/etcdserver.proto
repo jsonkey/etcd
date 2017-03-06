@@ -1,7 +1,7 @@
 syntax = "proto2";
 package etcdserverpb;
 
-import "github.com/gogo/protobuf/gogoproto/gogo.proto";
+import "gogoproto/gogo.proto";
 
 option (gogoproto.marshaler_all) = true;
 option (gogoproto.sizer_all) = true;
@@ -25,18 +25,10 @@ message Request {
 	optional bool   Quorum     = 14 [(gogoproto.nullable) = false];
 	optional int64  Time       = 15 [(gogoproto.nullable) = false];
 	optional bool   Stream     = 16 [(gogoproto.nullable) = false];
+	optional bool   Refresh    = 17 [(gogoproto.nullable) = true];
 }
 
 message Metadata {
 	optional uint64 NodeID    = 1 [(gogoproto.nullable) = false];
 	optional uint64 ClusterID = 2 [(gogoproto.nullable) = false];
-}
-
-// An InternalRaftRequest is the union of all requests which can be
-// sent via raft.
-message InternalRaftRequest {
-  option (gogoproto.onlyone) = true;
-  oneof value {
-    Request v2 = 1;
-  }
 }
